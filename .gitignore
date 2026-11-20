@@ -1,0 +1,38 @@
+# Claude Code local settings (contains local webhook URLs)
+.claude/
+.mcp.json
+
+# Editor / IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Secrets / credentials (defense in depth — azl stores secrets in SecretStore, not files,
+# but never let these slip into git regardless)
+*.pfx
+*.pem
+*.key
+*.p12
+*.pubkey
+.azure/
+azureProfile.json
+accessTokens.json
+local.settings.json
+secrets.json
+*.secret
+*.env
+.env
+.env.*
+*credentials*.json

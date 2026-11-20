@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Thin bash shim — delegates everything to azl.ps1 dispatcher.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PS1_PATH="$SCRIPT_DIR/../azl.ps1"
+
+if command -v cygpath >/dev/null 2>&1; then
+    PS1_PATH="$(cygpath -w "$PS1_PATH")"
+fi
+
+exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PS1_PATH" "$@"
