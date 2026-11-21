@@ -65,30 +65,46 @@ $mode = 'user'
 if ([string]$acct.user.type -eq 'servicePrincipal') { $mode = 'sp' }
 
 # Reverse-map the signed-in identity to a registered alias.
-# SP login: user.name is the appId. User login: best effort by tenantId
-# (the first alias on that tenant wins; '-' when nothing matches).
+# SP login: the same appId can be registered under several aliases (multi-tenant SP,
+# or per-subscription aliases), so match appId + tenantId and prefer the alias whose
+# subscriptionId is the active one. User login: best effort by tenantId.
+# '-' when nothing matches.
 $alias = '-'
 $tenantLabel = [string]$acct.tenantId
 if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
     Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction SilentlyContinue
     $entries = @(Get-SecretInfo -Vault $VaultName -ErrorAction SilentlyContinue)
+    $best = $null       # appId + tenantId + subscriptionId all match
+    $partial = $null    # appId + tenantId match (sub differs or not recorded)
     foreach ($entry in $entries) {
         $d = $null
         try { $d = Get-Secret -Name $entry.Name -Vault $VaultName -AsPlainText -ErrorAction Stop } catch { }
         if ($d -isnot [hashtable]) { continue }
-        $hit = $false
         if ($mode -eq 'sp') {
-            if ([string]$d.appId -eq [string]$acct.user.name) { $hit = $true }
+            if (([string]$d.appId -eq [string]$acct.user.name) -and
+                ([string]$d.tenantId -eq [string]$acct.tenantId)) {
+                if ([string]$d.subscriptionId -eq [string]$acct.id) {
+                    $best = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
+                    $d = $null
+                    break
+                }
+                if (-not $partial) {
+                    $partial = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
+                }
+            }
         } else {
-            if ([string]$d.tenantId -eq [string]$acct.tenantId) { $hit = $true }
-        }
-        if ($hit) {
-            $alias = $entry.Name
-            if ($d.tenantName) { $tenantLabel = [string]$d.tenantName }
-            $d = $null
-            break
+            if ([string]$d.tenantId -eq [string]$acct.tenantId) {
+                if (-not $partial) {
+                    $partial = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
+                }
+            }
         }
         $d = $null
+    }
+    $match = if ($best) { $best } else { $partial }
+    if ($match) {
+        $alias = $match.Name
+        if ($match.TenantName) { $tenantLabel = $match.TenantName }
     }
 }
 [GC]::Collect()

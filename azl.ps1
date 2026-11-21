@@ -106,7 +106,14 @@ function Invoke-Child {
         $tok = [string]$ChildArgs[$i]
         if ($tok.StartsWith('-')) {
             $flagName = $tok.TrimStart('-')
-            if (($valueFlags -contains $flagName.ToLower()) -and ($i + 1 -lt $ChildArgs.Count)) {
+            if ($valueFlags -contains $flagName.ToLower()) {
+                # A value flag with no value must fail BEFORE the child runs:
+                # e.g. '-Years' alone would otherwise bind $true -> [int]1 and
+                # renew would silently create a 1-year secret.
+                if (($i + 1 -ge $ChildArgs.Count) -or ([string]$ChildArgs[$i + 1]).StartsWith('-')) {
+                    Write-Host "azl: option '$tok' requires a value (e.g. '$tok 2')."
+                    exit 2
+                }
                 $named[$flagName] = $ChildArgs[$i + 1]
                 $i++
             } else {
