@@ -201,6 +201,9 @@ AZURE_CONFIG_DIR = C:/Users/<you>/.azure-profiles/<プロジェクト名>
   そのプロジェクトの全シェルに自動で効く(**次回起動から**)。このファイルは gitignore に入れること
 - プロファイルには**トークンが入る**ので、置き場所はリポジトリの外にする
 - ログイン後の `Active:` 行と `azl status` に、設定中の `AZURE_CONFIG_DIR` が表示される
+- **未設定(共有)のまま使うと、エイリアス切替が他のセッションも巻き込む**。そのためログイン時に
+  「共有プロファイル」の注意が1行表示され、`azl status` では `config_dir=(default:shared)` と表示される
+  (`-Json` では `sharedProfile: true`)。設定が消えたことに気づく手がかりにもなる
 
 ## Assisted Login(`azl` 引数なし)
 

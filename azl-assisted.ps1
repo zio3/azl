@@ -175,6 +175,8 @@ if ($acct) {
     Write-Host ("[azl] Active{0}: {1} | tenant={2} | sub={3}" -f $gtag, $acct.user.name, $tn, $acct.name)
     if ($env:AZURE_CONFIG_DIR) {
         Write-Host ("[azl] config: AZURE_CONFIG_DIR={0}" -f $env:AZURE_CONFIG_DIR)
+    } else {
+        Write-Host "[azl] config: 共有プロファイル (~/.azure) — AZURE_CONFIG_DIR 未設定のため、他のセッションのログイン先も切り替わります"
     }
     Write-Host "[azl] このまま 'az ...' を実行できます。"
 } else {

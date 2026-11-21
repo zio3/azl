@@ -27,12 +27,16 @@ function Resolve-AzCli {
     return $null
 }
 
-$configDir = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { '(default)' }
+# '(default:shared)' flags the shared ~/.azure profile: with no AZURE_CONFIG_DIR,
+# alias switches in any session affect every other session, and a vanished
+# settings entry is otherwise easy to miss.
+$sharedProfile = -not $env:AZURE_CONFIG_DIR
+$configDir = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { '(default:shared)' }
 
 $azBin = Resolve-AzCli
 if (-not $azBin) {
     if ($Json) {
-        [pscustomobject]@{ ok = $false; error = 'az-not-found'; configDir = $configDir } | ConvertTo-Json -Compress
+        [pscustomobject]@{ ok = $false; error = 'az-not-found'; configDir = $configDir; sharedProfile = $sharedProfile } | ConvertTo-Json -Compress
     } else {
         Write-Host "azl: error az-not-found"
     }
@@ -54,7 +58,7 @@ if ($showExit -eq 0 -and $showJson) {
 
 if (-not $acct) {
     if ($Json) {
-        [pscustomobject]@{ ok = $false; error = 'not-logged-in'; configDir = $configDir } | ConvertTo-Json -Compress
+        [pscustomobject]@{ ok = $false; error = 'not-logged-in'; configDir = $configDir; sharedProfile = $sharedProfile } | ConvertTo-Json -Compress
     } else {
         Write-Host ("azl: not-logged-in config_dir={0}" -f $configDir)
     }
@@ -153,6 +157,7 @@ if ($Json) {
         subscription   = [string]$acct.name
         subscriptionId = [string]$acct.id
         configDir      = $configDir
+        sharedProfile  = $sharedProfile
     }) | ConvertTo-Json -Compress
 } else {
     Write-Host ("azl: ok alias={0} mode={1} tenant=""{2}"" sub=""{3}"" sub_id={4} config_dir={5}" -f `

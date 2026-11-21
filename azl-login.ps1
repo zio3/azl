@@ -206,6 +206,10 @@ if ($showExit -eq 0) {
     Log ("Active: {0}{1} | {2} / {3} | sub={4}" -f $Name, $modeTag, $tenantName, $subLabel, $account.id) 'SUMMARY'
     if ($env:AZURE_CONFIG_DIR) {
         Log ("config: AZURE_CONFIG_DIR={0}" -f $env:AZURE_CONFIG_DIR) 'SUMMARY'
+    } else {
+        # Shared profile: switching an alias here also switches every other session
+        # that uses the default ~/.azure. Say so, so nobody debugs phantom 403s.
+        Log "config: 共有プロファイル (~/.azure) — AZURE_CONFIG_DIR 未設定のため、他のセッションのログイン先も切り替わります" 'SUMMARY'
     }
 } else {
     # Fail hard: a login whose final state cannot be verified must not report success.
