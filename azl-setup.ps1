@@ -119,7 +119,13 @@ if ($cfg -and [string]$cfg.Authentication -eq 'None' -and [string]$cfg.Interacti
 
 # --- 4. Self-test: write / read / delete -------------------------------------
 Say "動作確認 (テストシークレットの書込/読取/削除)..."
-$testName = 'azl-setup-selftest'
+# Random suffix + existence check: a fixed name could collide with a real
+# secret on re-run, and Set-Secret would overwrite it and Remove-Secret delete it.
+$testName = "azl-setup-selftest-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+if (Get-SecretInfo -Name $testName -Vault $VaultName -ErrorAction SilentlyContinue) {
+    Warn "一時シークレット名が偶然衝突しました。もう一度 'azl setup' を実行してください。"
+    exit 1
+}
 Set-Secret -Name $testName -Secret 'ok' -Vault $VaultName
 $readBack = Get-Secret -Name $testName -Vault $VaultName -AsPlainText
 Remove-Secret -Name $testName -Vault $VaultName

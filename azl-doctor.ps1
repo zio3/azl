@@ -77,11 +77,18 @@ if ($haveSecretMgmt) {
     }
 
     if ($vault) {
-        $aliasCount = @(Get-SecretInfo -Vault $VaultName -ErrorAction SilentlyContinue).Count
-        if ($aliasCount -gt 0) {
-            Ok ("エイリアス: {0} 件 (一覧は azl list)" -f $aliasCount)
+        # Only enumerate when the store is readable without interaction: on a
+        # password-protected store Get-SecretInfo PROMPTS (SilentlyContinue does
+        # not suppress prompts), and doctor must never hang a non-interactive shell.
+        if ($cfg -and [string]$cfg.Authentication -eq 'None' -and [string]$cfg.Interaction -eq 'None') {
+            $aliasCount = @(Get-SecretInfo -Vault $VaultName -ErrorAction SilentlyContinue).Count
+            if ($aliasCount -gt 0) {
+                Ok ("エイリアス: {0} 件 (一覧は azl list)" -f $aliasCount)
+            } else {
+                Info "エイリアス: 0 件 (azl register で登録)"
+            }
         } else {
-            Info "エイリアス: 0 件 (azl register で登録)"
+            Info "エイリアス: 未確認 (SecretStore が非対話で読めない設定のため列挙をスキップ)"
         }
     }
 }
