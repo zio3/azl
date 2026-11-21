@@ -64,6 +64,22 @@ if (-not $acct) {
 $mode = 'user'
 if ([string]$acct.user.type -eq 'servicePrincipal') { $mode = 'sp' }
 
+# Vault entries may store tenantId as a GUID or as a domain name (azl register
+# accepts both). `az account show` reports a GUID in tenantId and, on az 2.61+,
+# the domain in tenantDefaultDomain; compare in whichever form the entry uses.
+function Test-TenantMatch {
+    param([string]$Stored, $Acct)
+    if (-not $Stored) { return $false }
+    if ($Stored -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+        return ($Stored -eq [string]$Acct.tenantId)
+    }
+    $acctDomain = [string]$Acct.tenantDefaultDomain
+    if ($acctDomain) { return ($Stored -ieq $acctDomain) }
+    # Domain-name entry but az is too old to report the domain: cannot verify,
+    # so do not exclude the alias on tenant grounds.
+    return $true
+}
+
 # Reverse-map the signed-in identity to a registered alias.
 # SP login: the same appId can be registered under several aliases (multi-tenant SP,
 # or per-subscription aliases), so match appId + tenantId and prefer the alias whose
@@ -82,7 +98,7 @@ if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
         if ($d -isnot [hashtable]) { continue }
         if ($mode -eq 'sp') {
             if (([string]$d.appId -eq [string]$acct.user.name) -and
-                ([string]$d.tenantId -eq [string]$acct.tenantId)) {
+                (Test-TenantMatch -Stored ([string]$d.tenantId) -Acct $acct)) {
                 if ([string]$d.subscriptionId -eq [string]$acct.id) {
                     $best = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
                     $d = $null
@@ -93,7 +109,7 @@ if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
                 }
             }
         } else {
-            if ([string]$d.tenantId -eq [string]$acct.tenantId) {
+            if (Test-TenantMatch -Stored ([string]$d.tenantId) -Acct $acct) {
                 if (-not $partial) {
                     $partial = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
                 }
