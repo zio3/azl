@@ -6,7 +6,7 @@ Claude Code（および任意のCLI環境）から、**正しいテナント/サ
 - **`azl <name>`** — SPエイリアスログイン。完全非対話。LLM/CI などの無人実行向け。シークレットは **PowerShell SecretStore (DPAPI 暗号化)** に保管
 
 > **Repo**: https://github.com/zio3/azl  
-> **Last Updated**: 2026-11-20
+> **Last Updated**: 2026-11-21
 
 ## 背景と目的
 
@@ -28,7 +28,7 @@ Claude Code (bash / git bash)
            └─ (subscriptionId があれば) az account set --subscription ...
 ```
 
-- シークレットは **PowerShell プロセス内で完結** (bashの`$VAR`やプロセス引数に露出しない)
+- シークレットは bash の `$VAR` / プロセス引数 / 履歴に露出しない(PowerShell から az へ直接渡す。ただし `az login` 実行中の数秒間は az プロセスの引数に載る — 「守れないこと」参照)
 - bash側には成功/失敗だけ戻す
 - 以降は通常の `az` コマンドがそのまま使える
 
@@ -59,7 +59,8 @@ Claude Code (bash / git bash)
 | `azl login <name>` | 同上(明示形) |
 | `azl <name> -Verbose` | ログイン(進捗フル表示) |
 | `azl list` | 登録済みエイリアスを表示(**シークレットは出さない**) |
-| `azl show <name>` | メタ情報のみ表示(**シークレットは出さない**) |
+| `azl status` | 現在のログイン状態を1行表示(エイリアス逆引き・`-Json` あり。**ログイン状態を変えない**) |
+| `azl show <name>` | vault のメタ情報を表示(**シークレットは出さない**)。`-Live` で AD 上の実期限・ロール割当も取得(**SP ログインに切り替わる**) |
 | `azl register` | エイリアスを新規登録(全フィールドを対話入力、最後に alias 名) |
 | `azl rotate <name>` | SP シークレットのローテ(受領した新secret→検証→secret フィールドのみ書換) |
 | `azl renew <name>` | SP シークレットを自動生成して更新(要 `azl <name> -Graph` + App管理権限) |
@@ -80,8 +81,9 @@ azl/
   ├─ azl-rotate.ps1         # secret ローテ(手動貼り付け)
   ├─ azl-renew.ps1          # secret 自動更新(Graph)
   ├─ azl-list.ps1           # 一覧
+  ├─ azl-status.ps1         # 現在のログイン状態の1行表示(読み取り専用)
   ├─ azl-remove.ps1         # 削除
-  ├─ azl-show.ps1           # メタ情報表示
+  ├─ azl-show.ps1           # メタ情報表示(-Live でライブ情報)
   └─ bin\
       ├─ azl                # bash shim
       └─ azl.cmd            # cmd shim
@@ -174,9 +176,31 @@ azl register
 
 ```bash
 azl work                       # ログイン
+azl status                     # いまどのエイリアス/テナントか1行で確認
 az group list -o table         # 以降、普通に az が使える
 az deployment group create ... # デプロイもそのまま
 ```
+
+## 複数セッションでの併用(AZURE_CONFIG_DIR)
+
+az はログイン状態を既定で `~/.azure` の **1ファイルに保存**するため、複数のセッション
+(複数の LLM セッション・ターミナル)で azl を使うと、片方の `azl <name>` がもう片方の
+ログイン先を書き換えてしまう。症状は「突然 `ResourceGroupNotFound` / 403 になる」で、
+Azure 側の設定ミスに見えるのが厄介。
+
+対策は az 公式の環境変数 **`AZURE_CONFIG_DIR`** で保存先をセッション(プロジェクト)ごとに分けること:
+
+```
+AZURE_CONFIG_DIR = C:/Users/<you>/.azure-profiles/<プロジェクト名>
+```
+
+- azl 側の設定は不要(az が `AZURE_CONFIG_DIR` を見るので、設定済みの環境で `azl <name>` を打つだけ)
+- **SecretStore(エイリアス登録)は Windows ユーザー単位で共有のまま**。分かれるのはログイン状態だけで、登録は1回で済む
+- ログイン状態はファイルなので再起動しても残る(`azl <name>` は初回1回だけ)
+- Claude Code なら、プロジェクトの `.claude/settings.local.json` の `"env"` に置くと
+  そのプロジェクトの全シェルに自動で効く(**次回起動から**)。このファイルは gitignore に入れること
+- プロファイルには**トークンが入る**ので、置き場所はリポジトリの外にする
+- ログイン後の `Active:` 行と `azl status` に、設定中の `AZURE_CONFIG_DIR` が表示される
 
 ## Assisted Login(`azl` 引数なし)
 
@@ -241,6 +265,10 @@ azl work -Graph       # 一時的に本人ログイン(ARM+Graph: az ad ... 操�
 azl work              # SP に戻す
 ```
 
+> **注意**: `-User` / `-Graph`(と引数なしの `azl`)は**ブラウザを開いて人の操作を待つ**。
+> LLM のシェルから実行すると止まったように見えるので、人が実行すること
+> (Claude Code なら `! azl work -Graph` のように `!` プレフィックスで)。
+
 ### 仕組み
 
 - 保存データは変更しない — 既存 SP エイリアスの `tenantId` フィールドをそのまま流用
@@ -274,11 +302,15 @@ azl work              # SP に戻す
 - **DPAPI 暗号化** — 同一 Windows ユーザーアカウント以外は復号不可
 - ファイル丸ごとコピーしても他 PC では使えない
 - git 等に平文でコミットされる経路がない
-- シークレットが bash のプロセス引数 / 環境変数 / 履歴に残らない(PowerShell 内で完結)
+- シークレットが bash のプロセス引数 / 環境変数 / 履歴に残らない(PowerShell から az へ直接渡す)
 
 ### 守れないこと
 
 - **同じユーザーで動く任意のプロセス**は SecretStore を読める(マルウェア防御ではない)
+- `az login` 実行中の数秒間、シークレットは az(python)プロセスの**コマンドライン引数に載る**
+  (同一ユーザーのプロセス一覧から見える。az CLI が stdin / 環境変数でのシークレット受け渡しを
+  サポートしないための制約で、上の「同一ユーザー内は守らない」前提と同じ範囲。
+  これを避けたい場合は証明書ベースの SP 認証に移行する)
 - `Authentication None` 設定のため、SecretStore のパスワード保護は無効化されている
 - OS 再インストール・ユーザー削除で SecretStore は失われる(バックアップ責任は利用者)
 - SP シークレット自体の有効期限管理は別途必要(Azure 側で最大 2 年)

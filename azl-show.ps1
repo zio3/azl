@@ -1,13 +1,17 @@
 <#
 .SYNOPSIS
-  Show metadata + live info (secret expiration, role assignments) for an alias.
+  Show vault metadata for an alias (read-only by default).
 .DESCRIPTION
-  Always logs in as the SP to fetch live info. This WILL switch your
-  az session to this SP.
+  Default: prints only what is stored in the vault, including the recorded
+  secret expiry. Performs NO az calls, so the current az login is untouched.
+
+  -Live additionally logs in as the SP to fetch live info (actual credential
+  expiry, role assignments). This WILL switch your az session to this SP.
 #>
 param(
     [Parameter(Mandatory=$true, Position=0)]
-    [string]$Name
+    [string]$Name,
+    [switch]$Live
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +52,20 @@ if ($data -isnot [hashtable]) {
 # --- Stored metadata ---
 $portalUrl = "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/$([string]$data.appId)"
 
+# Vault-recorded expiry (same source as `azl list` / login-time check)
+$expiresDisp = '(not recorded — run azl renew to record it)'
+if ($data.ContainsKey('secretExpiresAt') -and $data.secretExpiresAt) {
+    try {
+        $end = [datetime]::ParseExact([string]$data.secretExpiresAt, 'yyyy-MM-dd', $null)
+        $days = [math]::Floor(($end - (Get-Date)).TotalDays)
+        if ($days -lt 0) {
+            $expiresDisp = ('期限切れ ({0})' -f $end.ToString('yyyy-MM-dd'))
+        } else {
+            $expiresDisp = ('{0} (残り {1} 日)' -f $end.ToString('yyyy-MM-dd'), $days)
+        }
+    } catch { $expiresDisp = '(invalid secretExpiresAt in vault)' }
+}
+
 $out = [ordered]@{
     name             = $Name
     tenantName       = [string]$data.tenantName
@@ -56,13 +74,24 @@ $out = [ordered]@{
     subscriptionId   = [string]$data.subscriptionId
     appId            = [string]$data.appId
     secret           = if ($data.secret) { '(set)' } else { '(unset)' }
+    'secret expires'  = $expiresDisp
     'portal (creds)' = $portalUrl
+}
+if ($data.ContainsKey('secretRenewedAt') -and $data.secretRenewedAt) {
+    $out['secret renewed'] = [string]$data.secretRenewedAt
 }
 $out.GetEnumerator() | ForEach-Object {
     '{0,-18} : {1}' -f $_.Key, $_.Value
 }
 
-# --- Live info ---
+if (-not $Live) {
+    Write-Host ""
+    Write-Host "(vault の情報のみ。ライブ情報 — AD 上の実際の期限・ロール割当 — は 'azl show $Name -Live'。"
+    Write-Host " -Live はこの SP でログインし直すため、現在の az ログイン状態が切り替わります)"
+    exit 0
+}
+
+# --- Live info (-Live only: switches the az session to this SP) ---
 Write-Host ""
 Write-Host "--- Live info ---"
 

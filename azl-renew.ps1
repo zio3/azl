@@ -121,19 +121,30 @@ if ($showRes.Exit -ne 0) {
     exit 2
 }
 
-# --- 3. Record our current credential (by hint) so we can delete just ours later ---
-$oldHint = $null
-if ($data.secret) {
-    $s = [string]$data.secret
-    if ($s.Length -ge 3) { $oldHint = $s.Substring(0,3) }
-}
+# --- 3. Identify our current credential so we can delete just ours later -----------
+# Preferred: the keyId recorded in the vault by a previous renew (exact match).
+# Fallback: hint (first 3 chars of the stored secret) — but ONLY when exactly one
+# credential matches; a hint is not unique, and deleting on an ambiguous match
+# could remove someone else's credential.
 $oldKeyId = $null
-$listRes = Invoke-Az @('ad','app','credential','list','--id',$appId,'--output','json')
-if ($listRes.Exit -eq 0) {
-    try { $creds = ($listRes.Out -join "`n") | ConvertFrom-Json } catch { $creds = $null }
-    if ($oldHint -and $creds) {
-        foreach ($c in @($creds)) {
-            if ($c.hint -eq $oldHint) { $oldKeyId = $c.keyId; break }
+if ($data.ContainsKey('secretKeyId') -and $data.secretKeyId) {
+    $oldKeyId = [string]$data.secretKeyId
+} else {
+    $oldHint = $null
+    if ($data.secret) {
+        $s = [string]$data.secret
+        if ($s.Length -ge 3) { $oldHint = $s.Substring(0,3) }
+    }
+    $listRes = Invoke-Az @('ad','app','credential','list','--id',$appId,'--output','json')
+    if ($listRes.Exit -eq 0) {
+        try { $creds = ($listRes.Out -join "`n") | ConvertFrom-Json } catch { $creds = $null }
+        if ($oldHint -and $creds) {
+            $hintMatches = @(@($creds) | Where-Object { $_.hint -eq $oldHint })
+            if ($hintMatches.Count -eq 1) {
+                $oldKeyId = [string]$hintMatches[0].keyId
+            } elseif ($hintMatches.Count -gt 1) {
+                Write-Host "[azl renew] hint '$oldHint' に一致する credential が複数あります。旧シークレットの自動削除は行いません。" -ForegroundColor Yellow
+            }
         }
     }
 }
@@ -169,15 +180,28 @@ Write-Host "[azl renew] 新シークレットを取得しました。"
 # without any Graph permission (the SP cannot read its own credentials).
 $newHint = if ($newSecret.Length -ge 3) { $newSecret.Substring(0, 3) } else { $null }
 $expiresAt = $null
+$newKeyId = $null
 $listRes2 = Invoke-Az @('ad','app','credential','list','--id',$appId,'--output','json')
 if ($listRes2.Exit -eq 0 -and $newHint) {
     try {
         $creds2 = ($listRes2.Out | Where-Object { $_ -notmatch '^WARNING' } | ForEach-Object { $_.ToString() }) -join "`n" | ConvertFrom-Json
     } catch { $creds2 = $null }
+    # Identify OUR new credential by displayName (unique: azl-<name>-<yyyymmdd>) + hint.
     foreach ($c in @($creds2)) {
-        if ($c.hint -eq $newHint) {
+        if ($c.displayName -eq $dn -and $c.hint -eq $newHint) {
             try { $expiresAt = ([datetime]$c.endDateTime).ToString('yyyy-MM-dd') } catch { }
+            $newKeyId = [string]$c.keyId
             break
+        }
+    }
+    if (-not $newKeyId) {
+        # Fallback: hint alone (displayName may be absent on some tenants).
+        foreach ($c in @($creds2)) {
+            if ($c.hint -eq $newHint) {
+                try { $expiresAt = ([datetime]$c.endDateTime).ToString('yyyy-MM-dd') } catch { }
+                $newKeyId = [string]$c.keyId
+                break
+            }
         }
     }
 }
@@ -188,6 +212,13 @@ if (-not $expiresAt) {
 $data.secret = $newSecret
 $data.secretRenewedAt = $stamp
 $data.secretExpiresAt = $expiresAt
+# Record the credential's keyId so the NEXT renew can delete exactly this one
+# (no hint guessing). Absent when the listing failed; next renew then falls back.
+if ($newKeyId) {
+    $data.secretKeyId = $newKeyId
+} elseif ($data.ContainsKey('secretKeyId')) {
+    $data.Remove('secretKeyId')   # stale keyId belongs to the old secret
+}
 Set-Secret -Name $Name -Vault $VaultName -Secret $data
 Write-Host "[azl renew] vault を更新しました (alias '$Name', 期限 $expiresAt を記録)。"
 

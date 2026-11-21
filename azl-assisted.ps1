@@ -173,6 +173,9 @@ if ($acct) {
     $gtag = if ($Graph) { ' [graph]' } else { '' }
     $tn = if ($chosenTenantName) { $chosenTenantName } else { $acct.tenantId }
     Write-Host ("[azl] Active{0}: {1} | tenant={2} | sub={3}" -f $gtag, $acct.user.name, $tn, $acct.name)
+    if ($env:AZURE_CONFIG_DIR) {
+        Write-Host ("[azl] config: AZURE_CONFIG_DIR={0}" -f $env:AZURE_CONFIG_DIR)
+    }
     Write-Host "[azl] このまま 'az ...' を実行できます。"
 } else {
     Write-Host "[azl] ログイン状態を確認できませんでした。'az account show' で確認してください。" -ForegroundColor Yellow

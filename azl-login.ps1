@@ -102,7 +102,7 @@ $data = $null
 try {
     $data = Get-Secret -Name $Name -Vault $VaultName -AsPlainText -ErrorAction Stop
 } catch {
-    Log "Alias '$Name' not found. Register it first: azl register $Name" 'ERROR'
+    Log "Alias '$Name' not found. Register it first: azl register (登録の最後に alias 名を聞かれます)" 'ERROR'
     exit 1
 }
 if ($data -isnot [hashtable]) {
@@ -138,6 +138,10 @@ if ($isUser) {
     $logins = @()
     $logins += @{ label = 'ARM'; scope = $null }   # always for user mode
     if ($Graph) { $logins += @{ label = 'Microsoft Graph'; scope = 'https://graph.microsoft.com//.default' } }
+
+    # Interactive: tell the caller up front that a human must act in the browser
+    # (an LLM shell would otherwise just see the command "hang").
+    Log "ブラウザでのサインイン操作が必要です。人が操作してください (LLM からは実行しない)..." 'SUMMARY'
 
     $loginExit = 0
     foreach ($lg in $logins) {
@@ -181,7 +185,10 @@ if ($sub) {
     Log "Setting default subscription to $sub..." 'STEP'
     $setOut = & $azBin account set --subscription $sub 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Log "az account set failed ($sub): $setOut" 'WARN'
+        # Fail hard: callers (especially LLMs) trust the exit code. Continuing on the
+        # wrong subscription silently misroutes every subsequent az command.
+        Log "az account set failed ($sub): $setOut" 'ERROR'
+        exit 1
     } else {
         Log "Default subscription set." 'OK'
     }
@@ -197,8 +204,13 @@ if ($showExit -eq 0) {
     $subLabel = if ($subName) { $subName } else { $account.name }
     $modeTag = if ($Graph) { ' [user+graph]' } elseif ($User) { ' [user]' } else { '' }
     Log ("Active: {0}{1} | {2} / {3} | sub={4}" -f $Name, $modeTag, $tenantName, $subLabel, $account.id) 'SUMMARY'
+    if ($env:AZURE_CONFIG_DIR) {
+        Log ("config: AZURE_CONFIG_DIR={0}" -f $env:AZURE_CONFIG_DIR) 'SUMMARY'
+    }
 } else {
-    Log "az account show failed; login state unclear." 'WARN'
+    # Fail hard: a login whose final state cannot be verified must not report success.
+    Log "az account show failed; login state unclear." 'ERROR'
+    exit 1
 }
 
 if ($isUser) {

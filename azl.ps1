@@ -16,7 +16,10 @@ USAGE:
   azl <name>              Log in with SP alias <name> (unattended; for LLM/CI)
   azl login <name>        Log in with alias <name>
   azl list                List registered aliases
-  azl show <name>         Show alias metadata (secret never shown)
+  azl status              Current az login as one line (alias / sp|user / tenant / sub)
+                          -Json for machine-readable output. Never changes login state.
+  azl show <name>         Show alias metadata from the vault (secret never shown)
+                          -Live also logs in as the SP for live info (switches session!)
   azl register            Register a new alias (paste appId/tenantId/secret)
   azl rotate <name>       Rotate SP secret (paste a secret produced elsewhere)
   azl renew <name>        Auto-generate a fresh SP secret via Graph and store it
@@ -61,6 +64,9 @@ FIRST TIME:
        azl <alias>
 
 NOTES:
+  - 'azl' (no args), -User and -Graph open a BROWSER and wait for a human.
+    Do not run them from an LLM; a human should run them (e.g. '! azl work -Graph'
+    in Claude Code). Unattended logins are 'azl <name>' (SP) only.
   - Secrets are stored in PowerShell SecretStore (DPAPI-encrypted, per-Windows-user).
   - 'azl login' auto-checks SP secret expiration and warns if <= 30 days left.
   - -Verbose is primarily for debugging login issues (module/cred/network).
@@ -88,7 +94,29 @@ function Invoke-Child {
         Write-Error "Internal error: $ChildScript not found at $path"
         exit 127
     }
-    & $path @ChildArgs
+    # Splatting a plain ARRAY passes '-Flag' tokens as positional strings, not as
+    # named parameters (PS 5.1 and 7 alike), so child scripts would silently drop
+    # or reject them. Rebuild: dash tokens become real named parameters (hashtable
+    # splat), everything else stays positional. Alias names cannot start with '-'
+    # (rejected at registration), so a dash token is always a flag here.
+    $positional = @()
+    $named = @{}
+    $valueFlags = @('years')   # flags that take a value; all others are switches
+    for ($i = 0; $i -lt $ChildArgs.Count; $i++) {
+        $tok = [string]$ChildArgs[$i]
+        if ($tok.StartsWith('-')) {
+            $flagName = $tok.TrimStart('-')
+            if (($valueFlags -contains $flagName.ToLower()) -and ($i + 1 -lt $ChildArgs.Count)) {
+                $named[$flagName] = $ChildArgs[$i + 1]
+                $i++
+            } else {
+                $named[$flagName] = $true
+            }
+        } else {
+            $positional += ,$ChildArgs[$i]
+        }
+    }
+    & $path @positional @named
     exit $LASTEXITCODE
 }
 
@@ -111,6 +139,12 @@ function Pick-Alias {
     Write-Host "Select alias for '$Command':"
     for ($i = 0; $i -lt $entries.Count; $i++) {
         Write-Host ("  {0}) {1}" -f ($i + 1), $entries[$i].Name)
+    }
+    # Non-interactive callers (LLM shells, CI) cannot answer Read-Host; fail fast
+    # with the list above instead of hanging on stdin.
+    if ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive) {
+        Write-Host "Non-interactive session: cannot prompt. Run 'azl $Command <name>' with one of the names above."
+        exit 2
     }
     $sel = Read-Host "Number [1]"
     if (-not $sel) { $sel = "1" }
@@ -184,6 +218,7 @@ switch -Exact ($command) {
         Invoke-Child 'azl-login.ps1' $resolved
     }
     'list'     { Invoke-Child 'azl-list.ps1'     $rest }
+    'status'   { Invoke-Child 'azl-status.ps1'   $rest }
     'show' {
         $resolved = Resolve-NameArg 'show' $rest
         Invoke-Child 'azl-show.ps1' $resolved

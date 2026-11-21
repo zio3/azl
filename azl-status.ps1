@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+  Show the current az login state as one line (never changes login state).
+.DESCRIPTION
+  Reads `az account show` and reverse-maps the signed-in identity to a registered
+  azl alias (SP login: by appId, user login: by tenantId). Read-only: performs no
+  login and no `az account set`.
+
+  Output (plain):
+    azl: ok alias=<name|-> mode=<sp|user> tenant="<label>" sub="<name>" sub_id=<id> config_dir=<dir|(default)>
+  Output (-Json): the same fields as a single JSON object.
+
+  Exit codes: 0 = logged in, 1 = not logged in (or az missing).
+#>
+param(
+    [switch]$Json
+)
+
+$ErrorActionPreference = 'Stop'
+$VaultName = 'azl'
+
+function Resolve-AzCli {
+    foreach ($candidate in @('az', 'az.cmd')) {
+        $c = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($c) { return $c.Source }
+    }
+    return $null
+}
+
+$configDir = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { '(default)' }
+
+$azBin = Resolve-AzCli
+if (-not $azBin) {
+    if ($Json) {
+        [pscustomobject]@{ ok = $false; error = 'az-not-found'; configDir = $configDir } | ConvertTo-Json -Compress
+    } else {
+        Write-Host "azl: error az-not-found"
+    }
+    exit 1
+}
+
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $showJson = & $azBin account show --output json 2>$null
+    $showExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEAP
+}
+$acct = $null
+if ($showExit -eq 0 -and $showJson) {
+    try { $acct = ($showJson | Out-String) | ConvertFrom-Json } catch { $acct = $null }
+}
+
+if (-not $acct) {
+    if ($Json) {
+        [pscustomobject]@{ ok = $false; error = 'not-logged-in'; configDir = $configDir } | ConvertTo-Json -Compress
+    } else {
+        Write-Host ("azl: not-logged-in config_dir={0}" -f $configDir)
+    }
+    exit 1
+}
+
+$mode = 'user'
+if ([string]$acct.user.type -eq 'servicePrincipal') { $mode = 'sp' }
+
+# Reverse-map the signed-in identity to a registered alias.
+# SP login: user.name is the appId. User login: best effort by tenantId
+# (the first alias on that tenant wins; '-' when nothing matches).
+$alias = '-'
+$tenantLabel = [string]$acct.tenantId
+if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
+    Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction SilentlyContinue
+    $entries = @(Get-SecretInfo -Vault $VaultName -ErrorAction SilentlyContinue)
+    foreach ($entry in $entries) {
+        $d = $null
+        try { $d = Get-Secret -Name $entry.Name -Vault $VaultName -AsPlainText -ErrorAction Stop } catch { }
+        if ($d -isnot [hashtable]) { continue }
+        $hit = $false
+        if ($mode -eq 'sp') {
+            if ([string]$d.appId -eq [string]$acct.user.name) { $hit = $true }
+        } else {
+            if ([string]$d.tenantId -eq [string]$acct.tenantId) { $hit = $true }
+        }
+        if ($hit) {
+            $alias = $entry.Name
+            if ($d.tenantName) { $tenantLabel = [string]$d.tenantName }
+            $d = $null
+            break
+        }
+        $d = $null
+    }
+}
+[GC]::Collect()
+
+if ($Json) {
+    [pscustomobject]([ordered]@{
+        ok             = $true
+        alias          = $alias
+        mode           = $mode
+        signedInAs     = [string]$acct.user.name
+        tenantId       = [string]$acct.tenantId
+        tenant         = $tenantLabel
+        subscription   = [string]$acct.name
+        subscriptionId = [string]$acct.id
+        configDir      = $configDir
+    }) | ConvertTo-Json -Compress
+} else {
+    Write-Host ("azl: ok alias={0} mode={1} tenant=""{2}"" sub=""{3}"" sub_id={4} config_dir={5}" -f `
+        $alias, $mode, $tenantLabel, [string]$acct.name, [string]$acct.id, $configDir)
+}
+exit 0

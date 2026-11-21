@@ -110,6 +110,11 @@ if ($secretExpiresAt) {
     # Old expiry belongs to the previous secret; drop it rather than mislead.
     $data.Remove('secretExpiresAt')
 }
+if ($data.ContainsKey('secretKeyId')) {
+    # The recorded keyId identifies the previous credential; after a manual rotate
+    # we no longer know our credential's keyId, so drop it (renew re-records it).
+    $data.Remove('secretKeyId')
+}
 Set-Secret -Name $Name -Vault $VaultName -Secret $data
 
 $newSecret = $null
