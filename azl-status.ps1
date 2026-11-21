@@ -10,10 +10,18 @@
     azl: ok alias=<name|-> mode=<sp|user> tenant="<label>" sub="<name>" sub_id=<id> config_dir=<dir|(default)>
   Output (-Json): the same fields as a single JSON object.
 
-  Exit codes: 0 = logged in, 1 = not logged in (or az missing).
+  -Check additionally acquires an ARM token (value never shown) to prove the
+  login is actually alive (`az account show` only reads a local file, so an
+  expired SP secret or a revoked user session still looks "ok" without it),
+  and probes whether a Microsoft Graph token can be obtained silently
+  (graph=yes|no; same silent acquisition that `az ad ...` would rely on).
+
+  Exit codes: 0 = logged in (and, with -Check, token alive),
+              1 = not logged in / az missing / -Check token acquisition failed.
 #>
 param(
-    [switch]$Json
+    [switch]$Json,
+    [switch]$Check
 )
 
 $ErrorActionPreference = 'Stop'
@@ -146,9 +154,34 @@ if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
 }
 [GC]::Collect()
 
+# -Check: actually acquire tokens (silently; values are discarded via --output none).
+$tokenOk = $null
+$graphOk = $null
+if ($Check) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $azBin account get-access-token --output none 2>$null
+        $tokenOk = ($LASTEXITCODE -eq 0)
+        if ($tokenOk) {
+            # --tenant is only valid for user accounts (az rejects it for SP logins).
+            $graphArgs = @('account','get-access-token','--resource-type','ms-graph','--output','none')
+            if ($mode -eq 'user') { $graphArgs += @('--tenant', [string]$acct.tenantId) }
+            & $azBin @graphArgs 2>$null
+            $graphOk = ($LASTEXITCODE -eq 0)
+        } else {
+            $graphOk = $false
+        }
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
+$checkFailed = ($Check -and -not $tokenOk)
+
 if ($Json) {
-    [pscustomobject]([ordered]@{
-        ok             = $true
+    $obj = [ordered]@{
+        ok             = (-not $checkFailed)
         alias          = $alias
         mode           = $mode
         signedInAs     = [string]$acct.user.name
@@ -158,9 +191,23 @@ if ($Json) {
         subscriptionId = [string]$acct.id
         configDir      = $configDir
         sharedProfile  = $sharedProfile
-    }) | ConvertTo-Json -Compress
+    }
+    if ($Check) {
+        if ($checkFailed) { $obj.error = 'token-failed' }
+        $obj.tokenOk = $tokenOk
+        $obj.graphOk = $graphOk
+    }
+    [pscustomobject]$obj | ConvertTo-Json -Compress
 } else {
-    Write-Host ("azl: ok alias={0} mode={1} tenant=""{2}"" sub=""{3}"" sub_id={4} config_dir={5}" -f `
-        $alias, $mode, $tenantLabel, [string]$acct.name, [string]$acct.id, $configDir)
+    $head = if ($checkFailed) { 'stale' } else { 'ok' }
+    $checkSuffix = ''
+    if ($Check) {
+        $checkSuffix = (" token={0} graph={1}" -f `
+            $(if ($tokenOk) { 'ok' } else { 'failed' }), `
+            $(if ($graphOk) { 'yes' } else { 'no' }))
+    }
+    Write-Host ("azl: {0} alias={1} mode={2} tenant=""{3}"" sub=""{4}"" sub_id={5} config_dir={6}{7}" -f `
+        $head, $alias, $mode, $tenantLabel, [string]$acct.name, [string]$acct.id, $configDir, $checkSuffix)
 }
+if ($checkFailed) { exit 1 }
 exit 0

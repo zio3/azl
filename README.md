@@ -57,14 +57,17 @@ Claude Code (bash / git bash)
 | `azl -Graph` | Assisted login + Graph スコープ取得(`az ad ...` がそのまま使える) |
 | `azl <name>` | 指定エイリアスでSPログイン(非対話。LLM/CI 向け) |
 | `azl login <name>` | 同上(明示形) |
+| `azl ensure <name>` | **すでにその SP なら何もしない**、違えばSPログイン(冪等。毎回呼んでよい)。`-AllowUser` で同テナント・同サブスクの本人ログインも「そのまま」扱い |
 | `azl <name> -Verbose` | ログイン(進捗フル表示) |
-| `azl list` | 登録済みエイリアスを表示(**シークレットは出さない**) |
-| `azl status` | 現在のログイン状態を1行表示(エイリアス逆引き・`-Json` あり。**ログイン状態を変えない**) |
+| `azl list` | 登録済みエイリアスを表示(**シークレットは出さない**)。`-Json` で全値を省略なしで出力 |
+| `azl status` | 現在のログイン状態を1行表示(エイリアス逆引き・`-Json` あり。**ログイン状態を変えない**)。`-Check` でトークンが実際に生きているか+Graph が黙って取れるか(`token=ok graph=yes\|no`)まで確認 |
 | `azl show <name>` | vault のメタ情報を表示(**シークレットは出さない**)。`-Live` で AD 上の実期限・ロール割当も取得(**SP ログインに切り替わる**) |
 | `azl register` | エイリアスを新規登録(全フィールドを対話入力、最後に alias 名) |
 | `azl rotate <name>` | SP シークレットのローテ(受領した新secret→検証→secret フィールドのみ書換) |
 | `azl renew <name>` | SP シークレットを自動生成して更新(要 `azl <name> -Graph` + App管理権限) |
 | `azl remove <name>` | エイリアス削除 |
+| `azl setup` | SP エイリアス用の初期設定(モジュール導入 → vault 登録 → SecretStore 非対話化 → 動作確認)。**人が対話実行**。SecretStore に既存の中身があれば消さずに中断 |
+| `azl doctor` | 環境診断(az / モジュール / vault / SecretStore 設定 / `AZURE_CONFIG_DIR` を1行ずつ `[ok]`/`[NG]` 表示。読み取り専用) |
 | `azl -help` | ヘルプ表示 |
 
 **設計方針**: azl は「正しく認証済みの状態を作る」薄い層に徹する。SP の新規作成やロール割当などの管理操作は、ログイン後に素の `az ...`(LLM と対話しながらでも)で行う — azl は個々の管理機能を抱え込まない。
@@ -77,6 +80,9 @@ azl/
   ├─ azl.ps1                # ディスパッチャ
   ├─ azl-assisted.ps1       # assisted login(本人・テナント/サブスク選択)
   ├─ azl-login.ps1          # SPエイリアスログイン(+ -User / -Graph)
+  ├─ azl-ensure.ps1         # 冪等ログイン(既にそのSPなら何もしない)
+  ├─ azl-setup.ps1          # 初期設定(モジュール/vault/SecretStore)
+  ├─ azl-doctor.ps1         # 環境診断(読み取り専用)
   ├─ azl-register.ps1       # 登録
   ├─ azl-rotate.ps1         # secret ローテ(手動貼り付け)
   ├─ azl-renew.ps1          # secret 自動更新(Graph)
@@ -111,6 +117,11 @@ Install-Module Microsoft.PowerShell.SecretManagement, Microsoft.PowerShell.Secre
 
 ## 初期セットアップ
 
+> **引数なしの `azl`(本人ブラウザログイン)だけ使う場合は、手順 0(PATH 通し)だけで動く**。
+> 手順 1〜2(モジュール・vault)が必要なのは、SP エイリアス(`azl <name>` の無人ログイン)を使う人だけ。
+> 手順 1〜2 は **`azl setup`** 1 コマンドで自動実行できる(べき等・既存の SecretStore に中身があれば消さずに中断)。
+> 手で実施したい場合や中身の確認が必要な場合のために、以下に個々の手順も残す。実施後は `azl doctor` で確認できる。
+
 ### 0. リポジトリ取得と PATH 通し
 
 ```bash
@@ -140,6 +151,9 @@ $binPath = (Resolve-Path .\bin).Path
 Install-Module Microsoft.PowerShell.SecretManagement, Microsoft.PowerShell.SecretStore -Scope CurrentUser -Force
 ```
 
+> **Windows PowerShell 5.1(powershell.exe)側で実行すること**。pwsh 7 で `Install-Module` すると
+> モジュールが別のパスに入り、azl(内部で powershell.exe を使う)から見えない。
+
 ### 2. Vault の登録と非対話モード設定
 
 ```powershell
@@ -152,6 +166,10 @@ Reset-SecretStore -Authentication None -Interaction None -Scope CurrentUser -For
 
 - `Authentication None`: ストア解錠にパスワードを要求しない
 - `Interaction None`: 対話プロンプトを出さない
+- **注意**: `Reset-SecretStore` は SecretStore の**中身をすべて消す**。すでに別用途で SecretStore を
+  使っている場合は退避してから実行する(`azl setup` は中身があると自動で中断する)。
+  また `-DefaultVault` はその人の既定 vault を変えるので、他の vault がある環境では外す
+  (`azl setup` は他の vault があるとき `-DefaultVault` を付けない)
 
 Claude Code から非対話で呼ぶためこの設定が必須。マルウェア防御が目的ではなく「平文保存・git事故の防止」が目的のため、許容できるトレードオフ。
 
@@ -175,11 +193,15 @@ azl register
 ## 日常利用
 
 ```bash
-azl work                       # ログイン
+azl ensure work                # そのSPでなければログイン、既にそうなら何もしない(毎回これでよい)
 azl status                     # いまどのエイリアス/テナントか1行で確認
+azl status -Check              # トークンが実際に生きているかまで確認(token=ok graph=yes|no)
 az group list -o table         # 以降、普通に az が使える
 az deployment group create ... # デプロイもそのまま
 ```
+
+`azl work`(毎回ログイン)でも動くが、共有プロファイル(`AZURE_CONFIG_DIR` 未設定)では
+不要な再ログインが他セッションを巻き込むため、LLM からの定常利用は `azl ensure <name>` を推奨。
 
 ## 複数セッションでの併用(AZURE_CONFIG_DIR)
 

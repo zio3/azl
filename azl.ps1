@@ -15,9 +15,13 @@ USAGE:
   azl -Graph              Assisted login, also acquiring the Microsoft Graph scope
   azl <name>              Log in with SP alias <name> (unattended; for LLM/CI)
   azl login <name>        Log in with alias <name>
-  azl list                List registered aliases
+  azl ensure <name>       Log in with alias <name> ONLY if not already that SP
+                          (idempotent; safe to call every time. -AllowUser accepts
+                          a user login on the same tenant/sub as "already there")
+  azl list                List registered aliases (-Json for full untruncated values)
   azl status              Current az login as one line (alias / sp|user / tenant / sub)
                           -Json for machine-readable output. Never changes login state.
+                          -Check also verifies the token is alive + graph=yes|no
   azl show <name>         Show alias metadata from the vault (secret never shown)
                           -Live also logs in as the SP for live info (switches session!)
   azl register            Register a new alias (paste appId/tenantId/secret)
@@ -25,6 +29,10 @@ USAGE:
   azl renew <name>        Auto-generate a fresh SP secret via Graph and store it
                           (needs 'azl <name> -Graph' first; admin/owner rights)
   azl remove <name>       Remove an alias
+  azl setup               First-time setup for SP aliases (modules + vault +
+                          SecretStore non-interactive mode; human-run, prompts)
+  azl doctor              Diagnose the environment (read-only; az / modules /
+                          vault / SecretStore config / AZURE_CONFIG_DIR)
   azl -help, --help, -h   Show this message
 
 LOGIN FLAGS (after alias name):
@@ -165,11 +173,15 @@ function Pick-Alias {
 
 function Resolve-NameArg {
     param([string]$Command, [object[]]$RestArgs)
-    if ($RestArgs.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$RestArgs[0])) {
+    # A leading '-token' is a flag, not a name (alias names cannot start with '-'),
+    # so `azl ensure -AllowUser` still goes through the alias picker.
+    if ($RestArgs.Count -gt 0 -and
+        -not [string]::IsNullOrWhiteSpace([string]$RestArgs[0]) -and
+        -not ([string]$RestArgs[0]).StartsWith('-')) {
         return ,$RestArgs  # already has name; return as-is (preserve any extra flags)
     }
     $picked = Pick-Alias -Command $Command
-    return ,@($picked)
+    return ,(@($picked) + $RestArgs)
 }
 
 $argsList = @($args)
@@ -224,8 +236,14 @@ switch -Exact ($command) {
         $resolved = Resolve-NameArg 'login' $rest
         Invoke-Child 'azl-login.ps1' $resolved
     }
+    'ensure' {
+        $resolved = Resolve-NameArg 'ensure' $rest
+        Invoke-Child 'azl-ensure.ps1' $resolved
+    }
     'list'     { Invoke-Child 'azl-list.ps1'     $rest }
     'status'   { Invoke-Child 'azl-status.ps1'   $rest }
+    'setup'    { Invoke-Child 'azl-setup.ps1'    $rest }
+    'doctor'   { Invoke-Child 'azl-doctor.ps1'   $rest }
     'show' {
         $resolved = Resolve-NameArg 'show' $rest
         Invoke-Child 'azl-show.ps1' $resolved
