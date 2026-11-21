@@ -70,8 +70,15 @@ function Connect-Tenant {
         return $false
     }
     if ($WithGraph) {
-        if ((Invoke-Az @('login','--tenant',$TenantId,'--scope','https://graph.microsoft.com//.default','--output','none')).Exit -ne 0) {
-            Write-Host "[azl] Graph スコープの取得に失敗しました (ARM ログインは有効)。" -ForegroundColor Yellow
+        # Probe silently first: the ARM login's refresh token usually redeems for
+        # Graph without a second browser round-trip. Interactive only on failure.
+        if ((Invoke-Az @('account','get-access-token','--resource-type','ms-graph','--tenant',$TenantId,'--output','none')).Exit -eq 0) {
+            Write-Host "[azl] Graph スコープはキャッシュから取得しました (追加ログインなし)"
+        } else {
+            Write-Host "[azl] Graph スコープのサイレント取得に失敗。ブラウザで追加ログインします..."
+            if ((Invoke-Az @('login','--tenant',$TenantId,'--scope','https://graph.microsoft.com//.default','--output','none')).Exit -ne 0) {
+                Write-Host "[azl] Graph スコープの取得に失敗しました (ARM ログインは有効)。" -ForegroundColor Yellow
+            }
         }
     }
     return $true

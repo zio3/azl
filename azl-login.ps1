@@ -132,34 +132,53 @@ $loginStart = Get-Date
 if ($isUser) {
     # Any interactive user login needs ARM: right after auth, az enumerates
     # subscriptions via ARM, so a Graph-only login fails with AccountUnusable.
-    # => always acquire ARM first; -Graph just adds the Graph scope on top.
-    # ARM and Graph are distinct scopes, so they're acquired in separate logins
-    # (the 2nd prompt is often silent once the account is cached, but may reappear).
-    $logins = @()
-    $logins += @{ label = 'ARM'; scope = $null }   # always for user mode
-    if ($Graph) { $logins += @{ label = 'Microsoft Graph'; scope = 'https://graph.microsoft.com//.default' } }
+    # => always acquire ARM first; -Graph adds the Graph scope on top.
 
     # Interactive: tell the caller up front that a human must act in the browser
     # (an LLM shell would otherwise just see the command "hang").
     Log "ブラウザでのサインイン操作が必要です。人が操作してください (LLM からは実行しない)..." 'SUMMARY'
 
-    $loginExit = 0
-    foreach ($lg in $logins) {
-        Log ("Calling az login --tenant {0} (user mode, scope={1}, interactive browser)..." -f $tenant, $lg.label) 'STEP'
-        $loginArgs = @('login', '--tenant', $tenant, '--output', 'none')
-        if ($lg.scope) { $loginArgs += @('--scope', $lg.scope) }
-        # az login --tenant writes an interactive "Select the account..." notice to stderr.
-        # Under $ErrorActionPreference='Stop' that surfaces as a NativeCommandError and aborts
-        # the script even though the login itself succeeds, so relax it around this call.
+    Log ("Calling az login --tenant {0} (user mode, scope=ARM, interactive browser)..." -f $tenant) 'STEP'
+    # az login --tenant writes an interactive "Select the account..." notice to stderr.
+    # Under $ErrorActionPreference='Stop' that surfaces as a NativeCommandError and aborts
+    # the script even though the login itself succeeds, so relax it around this call.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $loginOut = & $azBin login --tenant $tenant --output none 2>&1
+        $loginExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    if ($Graph -and $loginExit -eq 0) {
+        # The ARM login's refresh token can usually be redeemed for the Graph scope
+        # WITHOUT a second browser round-trip, so probe silently first. Only when
+        # that fails (e.g. per-resource Conditional Access, missing consent) fall
+        # back to a second interactive login.
+        Log "Trying to acquire the Graph scope silently from the token cache..." 'STEP'
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $loginOut = & $azBin @loginArgs 2>&1
-            $loginExit = $LASTEXITCODE
+            & $azBin account get-access-token --resource-type ms-graph --tenant $tenant --output none 2>&1 | Out-Null
+            $graphSilentExit = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $prevEAP
         }
-        if ($loginExit -ne 0) { break }  # stop on first failure; reported below
+        if ($graphSilentExit -eq 0) {
+            Log "Graph スコープはキャッシュから取得しました (追加ログインなし)" 'SUMMARY'
+        } else {
+            Log "Graph スコープのサイレント取得に失敗。ブラウザで追加ログインします..." 'SUMMARY'
+            Log ("Calling az login --tenant {0} (user mode, scope=Microsoft Graph, interactive browser)..." -f $tenant) 'STEP'
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $loginOut = & $azBin login --tenant $tenant --scope 'https://graph.microsoft.com//.default' --output none 2>&1
+                $loginExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $prevEAP
+            }
+        }
     }
 } else {
     $appIdMasked = if ($appId.Length -ge 8) { $appId.Substring(0,8) + '...' } else { $appId }
