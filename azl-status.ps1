@@ -67,17 +67,23 @@ if ([string]$acct.user.type -eq 'servicePrincipal') { $mode = 'sp' }
 # Vault entries may store tenantId as a GUID or as a domain name (azl register
 # accepts both). `az account show` reports a GUID in tenantId and, on az 2.61+,
 # the domain in tenantDefaultDomain; compare in whichever form the entry uses.
+# Returns 'verified' (known to match), 'unverified' (domain entry that cannot be
+# checked on this az version) or '' (known not to match). An unverified candidate
+# must never outrank a verified one.
 function Test-TenantMatch {
     param([string]$Stored, $Acct)
-    if (-not $Stored) { return $false }
+    if (-not $Stored) { return '' }
     if ($Stored -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
-        return ($Stored -eq [string]$Acct.tenantId)
+        if ($Stored -eq [string]$Acct.tenantId) { return 'verified' }
+        return ''
     }
     $acctDomain = [string]$Acct.tenantDefaultDomain
-    if ($acctDomain) { return ($Stored -ieq $acctDomain) }
-    # Domain-name entry but az is too old to report the domain: cannot verify,
-    # so do not exclude the alias on tenant grounds.
-    return $true
+    if ($acctDomain) {
+        if ($Stored -ieq $acctDomain) { return 'verified' }
+        return ''
+    }
+    # Domain-name entry but az is too old to report the domain: cannot verify.
+    return 'unverified'
 }
 
 # Reverse-map the signed-in identity to a registered alias.
@@ -90,34 +96,45 @@ $tenantLabel = [string]$acct.tenantId
 if (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement) {
     Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction SilentlyContinue
     $entries = @(Get-SecretInfo -Vault $VaultName -ErrorAction SilentlyContinue)
-    $best = $null       # appId + tenantId + subscriptionId all match
-    $partial = $null    # appId + tenantId match (sub differs or not recorded)
+    # Candidate tiers, best first. A verified tenant match always outranks an
+    # unverified one (domain entry that this az version cannot check); within a
+    # tier, a subscriptionId match outranks no sub match; within that, first wins.
+    $tiers = @{ verifiedSub = $null; verified = $null; unverifiedSub = $null; unverified = $null }
     foreach ($entry in $entries) {
         $d = $null
         try { $d = Get-Secret -Name $entry.Name -Vault $VaultName -AsPlainText -ErrorAction Stop } catch { }
         if ($d -isnot [hashtable]) { continue }
+        $tenantRank = Test-TenantMatch -Stored ([string]$d.tenantId) -Acct $acct
+        $isCandidate = $false
         if ($mode -eq 'sp') {
-            if (([string]$d.appId -eq [string]$acct.user.name) -and
-                (Test-TenantMatch -Stored ([string]$d.tenantId) -Acct $acct)) {
-                if ([string]$d.subscriptionId -eq [string]$acct.id) {
-                    $best = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
-                    $d = $null
-                    break
-                }
-                if (-not $partial) {
-                    $partial = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
-                }
-            }
+            $isCandidate = ($tenantRank -ne '') -and ([string]$d.appId -eq [string]$acct.user.name)
         } else {
-            if (Test-TenantMatch -Stored ([string]$d.tenantId) -Acct $acct) {
-                if (-not $partial) {
-                    $partial = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
+            $isCandidate = ($tenantRank -ne '')
+        }
+        if ($isCandidate) {
+            $cand = @{ Name = $entry.Name; TenantName = [string]$d.tenantName }
+            $subHit = ([string]$d.subscriptionId -eq [string]$acct.id)
+            if ($tenantRank -eq 'verified') {
+                if ($subHit) {
+                    $tiers.verifiedSub = $cand
+                    $d = $null
+                    break   # cannot be beaten
+                }
+                if (-not $tiers.verified) { $tiers.verified = $cand }
+            } else {
+                if ($subHit) {
+                    if (-not $tiers.unverifiedSub) { $tiers.unverifiedSub = $cand }
+                } elseif (-not $tiers.unverified) {
+                    $tiers.unverified = $cand
                 }
             }
         }
         $d = $null
     }
-    $match = if ($best) { $best } else { $partial }
+    $match = $null
+    foreach ($tier in @('verifiedSub','verified','unverifiedSub','unverified')) {
+        if ($tiers[$tier]) { $match = $tiers[$tier]; break }
+    }
     if ($match) {
         $alias = $match.Name
         if ($match.TenantName) { $tenantLabel = $match.TenantName }
