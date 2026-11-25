@@ -6,7 +6,7 @@ Claude Code（および任意のCLI環境）から、**正しいテナント/サ
 - **`azl <name>`** — SPエイリアスログイン。完全非対話。LLM/CI などの無人実行向け。シークレットは **PowerShell SecretStore (DPAPI 暗号化)** に保管
 
 > **Repo**: https://github.com/zio3/azl  
-> **Last Updated**: 2026-11-21
+> **Last Updated**: 2026-11-25
 
 ## 背景と目的
 
@@ -176,8 +176,10 @@ Claude Code から非対話で呼ぶためこの設定が必須。マルウェ�
 ### 3. SP 作成
 
 ```bash
-az ad sp create-for-rbac --name "claude-code-work" --role Contributor \
+az ad sp create-for-rbac --name "claude-code-work" --role Reader \
   --scopes /subscriptions/<sub-id>
+# 書き込みが必要なら、サブスク全体ではなく特定リソースグループに絞る:
+#   --role Contributor --scopes /subscriptions/<sub-id>/resourceGroups/<rg>
 ```
 
 出力の `appId` / `password` / `tenant` を控える。**ロールは必要最小限** (Reader や特定 RG 限定の Contributor など) を推奨。
@@ -291,8 +293,13 @@ azl work              # SP に戻す
 ```
 
 > **注意**: `-User` / `-Graph`(と引数なしの `azl`)は**ブラウザを開いて人の操作を待つ**。
-> LLM のシェルから実行すると止まったように見えるので、人が実行すること
-> (Claude Code なら `! azl work -Graph` のように `!` プレフィックスで)。
+> LLM のシェルから実行すると止まったように見えるので、人が実行すること。
+>
+> Claude Code の `!` プレフィックスで実行できるのは、**ブラウザ操作だけで完結するもの**
+> (`! azl work -User` / `! azl work -Graph`)のみ。**Windows の Claude Code の `!` は
+> ターミナルへのキー入力(stdin)を受け付けない**ため、番号選択や貼り付けが要るコマンド
+> (引数なしの `azl`(テナント選択)、`azl setup`(確認)、`azl register` / `azl rotate`
+> (シークレット入力))は、Claude Code とは**別のターミナル**で実行すること。
 
 ### 仕組み
 
@@ -327,7 +334,7 @@ azl work              # SP に戻す
 - **DPAPI 暗号化** — 同一 Windows ユーザーアカウント以外は復号不可
 - ファイル丸ごとコピーしても他 PC では使えない
 - git 等に平文でコミットされる経路がない
-- シークレットが bash のプロセス引数 / 環境変数 / 履歴に残らない(PowerShell から az へ直接渡す)
+- シークレットが **呼び出し側 (bash) の**プロセス引数 / 環境変数 / 履歴に残らない(PowerShell から az へ直接渡す。az 実行中の露出は「守れないこと」参照)
 
 ### 守れないこと
 
@@ -349,12 +356,13 @@ azl work              # SP に戻す
 
 ### 初回セットアップ
 
-上記「初期セットアップ」の 1〜4 を実施。
+上記「初期セットアップ」の 0(PATH 通し)→ **`azl setup`**(手順 1〜2 を自動実行)→ 3〜4(SP 作成・登録)を実施。
+確認は `azl doctor`。
 
 ### 日常
 
 ```bash
-azl work
+azl ensure work       # そのSPでなければログイン、既にそうなら何もしない
 az resource list -o table
 ```
 

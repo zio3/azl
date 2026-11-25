@@ -48,11 +48,11 @@ LOGIN FLAGS (after alias name):
 EXAMPLES:
   azl                     # assisted login: pick tenant/subscription as yourself
   azl -Graph              # assisted login + Graph scope (az ad ... works)
-  azl zio3
-  azl zio3 -User          # one-off interactive login (ARM: RBAC etc.)
-  azl zio3 -Graph         # one-off interactive login (Graph: az ad ...)
-  azl zio3 -User -Graph   # both scopes in turn (may prompt twice)
-  azl login zio3 -Verbose
+  azl work
+  azl work -User          # one-off interactive login (ARM: RBAC etc.)
+  azl work -Graph         # one-off interactive login (Graph: az ad ...)
+  azl work -User -Graph   # both scopes in turn (may prompt twice)
+  azl login work -Verbose
   azl register
   azl list
 
@@ -62,7 +62,7 @@ FIRST TIME:
 
   For unattended use (LLM/CI, no browser), set up an SP alias once:
   1. Log in with 'azl' (or 'azl -Graph'), then create a service principal:
-       az ad sp create-for-rbac --name "claude-work" --role Contributor --scopes /subscriptions/<SUB_ID>
+       az ad sp create-for-rbac --name "claude-work" --role Reader --scopes /subscriptions/<SUB_ID>
      Note the output: appId, password (=secret), tenant
   2. Register the alias:
        azl register
@@ -73,8 +73,11 @@ FIRST TIME:
 
 NOTES:
   - 'azl' (no args), -User and -Graph open a BROWSER and wait for a human.
-    Do not run them from an LLM; a human should run them (e.g. '! azl work -Graph'
-    in Claude Code). Unattended logins are 'azl <name>' (SP) only.
+    Do not run them from an LLM; a human should run them. Claude Code's '!'
+    prefix works only for browser-only commands ('! azl work -Graph'); anything
+    that reads terminal input (no-arg 'azl', setup, register, rotate) needs a
+    separate terminal (on Windows, '!' passes no stdin to the command).
+    Unattended logins are 'azl <name>' (SP) only.
   - Secrets are stored in PowerShell SecretStore (DPAPI-encrypted, per-Windows-user).
   - 'azl login' auto-checks SP secret expiration and warns if <= 30 days left.
   - -Verbose is primarily for debugging login issues (module/cred/network).
